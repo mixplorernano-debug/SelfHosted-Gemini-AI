@@ -21,82 +21,98 @@ View your app in AI Studio: https://ai.studio/apps/drive/1sGvntbg0wDoqQmAGJFF5MN
 
 ```bash
 #!/data/data/com.termux/files/usr/bin/bash
-# Optimized for Android 12/13/14 and Magisk v26.4+
+# Optimized for Magisk 27.x - 30.x and Android 12/13/14+
+# Targeted for high-performance Chroot stability
 set -e
 
+# --- Variable Definitions ---
 FACTION="BEAR"
 CHROOT_DIR="/data/local/nhsystem/kalifs"
 NH_PATH="/data/data/com.offsec.nhterm/files/usr/bin/kali"
+SDCARD="/sdcard"
 
-echo "[*] Initializing Boot-kali-install for Android 12+..."
+echo "[*] Initializing NetHunter Boot-kali for Android 14 / Magisk 30.x..."
 
-# 1. Root Check
-if ! su -c "id" > /dev/null 2>&1; then
-    echo "[!] Error: Root not detected. Grant Termux root permissions in Magisk."
+# 1. Advanced Root & Magisk Environment Check
+if ! su -c "id" >/dev/null 2>&1; then
+    echo "[!] Error: Root access denied. Please allow root in Magisk/KernelSU/APatch."
     exit 1
 fi
 
-# 2. Dynamic Magisk/Zygisk Detection
-MAGISK_BIN=$(su -c "magisk --path")/magisk
-[ -z "$MAGISK_BIN" ] && MAGISK_BIN="/sbin/magisk"
-echo "[+] Using Magisk binary at: $MAGISK_BIN"
+# Detect Magisk Path (Magisk 26+ uses dynamic paths)
+MAGISK_PATH=$(su -c "magisk --path")
+MAGISK_BIN="$MAGISK_PATH/magisk"
+[ -z "$MAGISK_PATH" ] && MAGISK_BIN="/sbin/magisk"
 
-# 3. Chroot Path Validation
+echo "[+] Magisk Binary detected: $MAGISK_BIN"
+
+# 2. Filesystem & Path Consistency
 if [ ! -d "$CHROOT_DIR" ]; then
-    if su -c "[ -d /data/local/nhsystem/kali-arm64 ]"; then
-        echo "[*] Symlinking kali-arm64 to kalifs..."
-        su -c "ln -s /data/local/nhsystem/kali-arm64 $CHROOT_DIR"
+    # Modern NH often uses kali-arm64 or kali-amd64
+    POSSIBLE_DIR=$(su -c "ls -d /data/local/nhsystem/kali-* 2>/dev/null | head -n 1")
+    if [ -n "$POSSIBLE_DIR" ]; then
+        echo "[*] Found chroot at $POSSIBLE_DIR. Symlinking..."
+        su -c "ln -sf $POSSIBLE_DIR $CHROOT_DIR"
     else
-        echo "[!] Error: Kali chroot not found. Please install NetHunter Rootless or Full first."
+        echo "[!] Error: Kali chroot not found in /data/local/nhsystem/"
         exit 1
     fi
 fi
 
-# 4. Advanced Launch Shim (Improved with DNS and Environment isolation)
-echo "[*] Creating persistent Kali launcher..."
+# 3. Enhanced Launch Shim with Android 14 Mount Logic
+echo "[*] Deploying Advanced Kali Shim..."
 cat <<EOF >./kali_shim
 #!/system/bin/sh
-# Isolate environment to prevent Android/Termux library leaks
-unset LD_PRELOAD
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-export TERM=xterm-256color
-export HOME=/root
-
+# Use mount-master to ensure visibility across all namespaces
 $MAGISK_BIN su --mount-master -c "
-    # Ensure mounts are active
-    mount -o remount,dev,suid /data
-    [ ! -d $CHROOT_DIR/proc/1 ] && mount -t proc proc $CHROOT_DIR/proc
-    [ ! -d $CHROOT_DIR/sys/kernel ] && mount -t sysfs sysfs $CHROOT_DIR/sys
+    # Remount /data with execute permissions
+    mount -o remount,dev,suid,exec /data
+    
+    # Standard Mounts
+    mount -t proc proc $CHROOT_DIR/proc
+    mount -t sysfs sysfs $CHROOT_DIR/sys
     mount -o bind /dev $CHROOT_DIR/dev
     mount -t devpts devpts $CHROOT_DIR/dev/pts
-    mount -o bind /sdcard $CHROOT_DIR/sdcard
-
-    # Fix DNS inside Chroot (Crucial for A12+)
-    echo 'nameserver 8.8.8.8' > $CHROOT_DIR/etc/resolv.conf
-    echo 'nameserver 1.1.1.1' >> $CHROOT_DIR/etc/resolv.conf
     
+    # Android 12+ Fix: Bind mount /sdcard for file access
+    [ -d $CHROOT_DIR/sdcard ] || mkdir -p $CHROOT_DIR/sdcard
+    mount -o bind $SDCARD $CHROOT_DIR/sdcard
+
+    # Fix for Shared Memory (Required for some Pentest tools)
+    mount -t tmpfs -o size=256M tmpfs $CHROOT_DIR/dev/shm
+
     # Enter Chroot
-    chroot $CHROOT_DIR /bin/bash -l
+    chroot $CHROOT_DIR /usr/bin/env -i \
+        HOME=/root \
+        TERM=\$TERM \
+        PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+        /bin/bash -l
 "
 EOF
 
-# Deploy shim
+# Clean, Deploy, and Set Permissions
 sed -i 's/\r$//' ./kali_shim
 chmod 755 ./kali_shim
 su -c "cp ./kali_shim $NH_PATH && chmod 755 $NH_PATH"
 rm ./kali_shim
 
-# 5. Apply Phantom Process Killer Fix (Updated for Android 14)
-echo "[*] Optimizing Android Process Manager..."
-su -c "settings put global settings_config_gravity_ignore_pull_res true"
-su -c "/system/bin/device_config put activity_manager max_phantom_processes 2147483647"
+# 4. Networking & DNS Fix (Android 13+ Stability)
+echo "[*] Patching DNS for Chroot stability..."
+su -c "$MAGISK_BIN su -c \"echo 'nameserver 8.8.8.8' > $CHROOT_DIR/etc/resolv.conf\""
+su -c "$MAGISK_BIN su -c \"echo 'nameserver 1.1.1.1' >> $CHROOT_DIR/etc/resolv.conf\""
 
-# 6. Set Hostname and Faction
-su -c "$MAGISK_BIN su --mount-master -c \"chroot $CHROOT_DIR /bin/bash -c 'echo kali > /etc/hostname; echo $FACTION > /etc/faction'\""
+# 5. Comprehensive Phantom Process Killer (PPK) Fixes
+echo "[*] Applying Android 14 Process Management Fixes..."
+
+# Disable Phantom Process Killer entirely
+su -c "settings put global phantom_process_killer_enable false" 2>/dev/null
+# Increase max phantom processes to max integer
+su -c "/system/bin/device_config put activity_manager max_phantom_processes 2147483647" 2>/dev/null
+# Gravity Pull fix (prevents background freezing)
+su -c "settings put global settings_config_gravity_ignore_pull_res true" 2>/dev/null
 
 echo "------------------------------------------------------------"
-echo "[+] Setup Complete."
-echo "[+] Type 'kali' (or your configured command) to enter NetHunter."
-echo "[+] Note: If apps detect root, configure Shamiko/DenyList in Magisk."
+echo "[+] Setup Complete for Magisk 30.x Environment."
+echo "[+] Run 'kali' to start the environment."
 echo "------------------------------------------------------------"
 ```
